@@ -1,0 +1,7 @@
+{
+  "name": "Teara WorkHub",
+  "description": "Internal workforce, attendance, and productivity management platform for Teara with work logs, check-in/out, and reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
