@@ -1,0 +1,209 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Employee or administrator profile at Teara",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "employee"] },
+        "department": { "type": "string", "maxLength": 80 },
+        "jobTitle": { "type": "string", "maxLength": 100 },
+        "accountStatus": { "type": "string", "enum": ["active", "inactive"] },
+        "workModePreference": { "type": "string", "enum": ["office", "home", "hybrid"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "name", "email", "role", "department", "accountStatus"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "Daily attendance record for an employee",
+      "type": "object",
+      "properties": {
+        "attendanceId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "employeeEmail": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 80 },
+        "workDate": { "type": "string", "maxLength": 10 },
+        "workMode": { "type": "string", "enum": ["office", "home"] },
+        "status": { "type": "string", "enum": ["checked_in", "on_break", "checked_out"] },
+        "totalWorkingSeconds": { "type": "number" },
+        "totalBreakSeconds": { "type": "number" },
+        "firstCheckIn": { "type": "string" },
+        "lastCheckOut": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["attendanceId", "employeeId", "workDate", "workMode", "status"]
+    },
+    "WorkSession": {
+      "title": "WorkSession",
+      "description": "Active or historical work session within an attendance day",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "attendanceId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "workMode": { "type": "string", "enum": ["office", "home"] },
+        "checkInAt": { "type": "string" },
+        "checkOutAt": { "type": "string" },
+        "durationSeconds": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "completed"] }
+      },
+      "required": ["sessionId", "attendanceId", "employeeId", "checkInAt", "status"]
+    },
+    "Break": {
+      "title": "Break",
+      "description": "A recorded break interval during work",
+      "type": "object",
+      "properties": {
+        "breakId": { "type": "string", "maxLength": 128 },
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "attendanceId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "breakStartAt": { "type": "string" },
+        "breakEndAt": { "type": "string" },
+        "durationSeconds": { "type": "number" },
+        "reason": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["breakId", "attendanceId", "employeeId", "breakStartAt"]
+    },
+    "WorkLog": {
+      "title": "WorkLog",
+      "description": "Daily work log entry submitted by an employee",
+      "type": "object",
+      "properties": {
+        "workLogId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "employeeEmail": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 80 },
+        "attendanceId": { "type": "string", "maxLength": 128 },
+        "sessionId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 10 },
+        "jiraTaskId": { "type": "string", "maxLength": 50 },
+        "jiraTaskUrl": { "type": "string", "maxLength": 500 },
+        "workUndertaken": { "type": "string", "maxLength": 5000 },
+        "workCompleted": { "type": "string", "maxLength": 5000 },
+        "pendingWork": { "type": "string", "maxLength": 3000 },
+        "blockers": { "type": "string", "maxLength": 3000 },
+        "remarks": { "type": "string", "maxLength": 2000 },
+        "submissionStatus": { "type": "string", "enum": ["draft", "submitted", "reviewed"] },
+        "reviewRemarks": { "type": "string", "maxLength": 2000 },
+        "reviewedBy": { "type": "string", "maxLength": 120 },
+        "reviewedAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["workLogId", "employeeId", "date", "workUndertaken", "submissionStatus"]
+    },
+    "WorkLogResource": {
+      "title": "WorkLogResource",
+      "description": "External resource link or uploaded document attached to a work log",
+      "type": "object",
+      "properties": {
+        "resourceId": { "type": "string", "maxLength": 128 },
+        "workLogId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "url": { "type": "string", "maxLength": 1000 },
+        "resourceType": { "type": "string", "enum": ["jira", "gdrive", "gdocs", "gsheets", "gslides", "figma", "github", "research", "file", "other"] },
+        "fileName": { "type": "string", "maxLength": 200 },
+        "fileSize": { "type": "number" },
+        "fileDataUrl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["resourceId", "workLogId", "title", "resourceType"]
+    },
+    "WorkSchedule": {
+      "title": "WorkSchedule",
+      "description": "Policy and working hours configuration",
+      "type": "object",
+      "properties": {
+        "scheduleId": { "type": "string", "maxLength": 128 },
+        "departmentId": { "type": "string", "maxLength": 80 },
+        "dailyMinimumSeconds": { "type": "number" },
+        "weeklyMinimumSeconds": { "type": "number" },
+        "workModel": { "type": "string", "enum": ["hybrid", "office", "remote"] },
+        "effectiveFrom": { "type": "string" }
+      },
+      "required": ["scheduleId", "dailyMinimumSeconds", "weeklyMinimumSeconds"]
+    },
+    "CorrectionRequest": {
+      "title": "CorrectionRequest",
+      "description": "Attendance timestamp correction request by employee",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "attendanceId": { "type": "string", "maxLength": 128 },
+        "workDate": { "type": "string", "maxLength": 10 },
+        "requestedChanges": { "type": "string", "maxLength": 1000 },
+        "reason": { "type": "string", "maxLength": 1000 },
+        "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "reviewedBy": { "type": "string", "maxLength": 120 },
+        "reviewedAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["requestId", "employeeId", "attendanceId", "workDate", "reason", "approvalStatus"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Audit trail of workforce and attendance administrative actions",
+      "type": "object",
+      "properties": {
+        "auditId": { "type": "string", "maxLength": 128 },
+        "actorId": { "type": "string", "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 120 },
+        "action": { "type": "string", "maxLength": 120 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string" },
+        "metadata": { "type": "string", "maxLength": 3000 }
+      },
+      "required": ["auditId", "actorId", "action", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles and role settings"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/Attendance" },
+      "description": "Daily employee attendance status and accumulated hours"
+    },
+    "/workSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/WorkSession" },
+      "description": "Check-in and check-out periods"
+    },
+    "/breaks/{breakId}": {
+      "schema": { "$ref": "#/entities/Break" },
+      "description": "Break records with start and end times"
+    },
+    "/workLogs/{workLogId}": {
+      "schema": { "$ref": "#/entities/WorkLog" },
+      "description": "Daily work logs detailing Jira tickets, achievements, blockers"
+    },
+    "/workLogResources/{resourceId}": {
+      "schema": { "$ref": "#/entities/WorkLogResource" },
+      "description": "Attached links and documents for work logs"
+    },
+    "/workSchedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/WorkSchedule" },
+      "description": "Department and company work policy targets"
+    },
+    "/correctionRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/CorrectionRequest" },
+      "description": "Employee attendance correction applications"
+    },
+    "/auditLogs/{auditId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "System audit trail entries"
+    }
+  }
+}
