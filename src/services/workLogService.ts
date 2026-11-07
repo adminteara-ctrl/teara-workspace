@@ -1,8 +1,10 @@
+
 import {
   db,
   handleFirestoreError,
   OperationType,
 } from '../lib/firebase';
+
 import {
   collection,
   doc,
@@ -10,16 +12,46 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
+
 import { WorkLog, WorkLogRevision } from '../types';
+
+// Recursively remove undefined object properties before Firestore writes.
+// This also handles undefined values inside nested objects and resources.
+const cleanFirestoreData = (value: any): any => {
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      item === undefined ? null : cleanFirestoreData(item)
+    );
+  }
+
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  ) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([_, item]) => item !== undefined)
+        .map(([key, item]) => [key, cleanFirestoreData(item)])
+    );
+  }
+
+  return value;
+};
 
 class WorkLogService {
   private localWorkLogs = new Map<string, WorkLog>();
 
-  async createOrUpdateWorkLog(log: WorkLog, isRevision = false): Promise<WorkLog> {
+  async createOrUpdateWorkLog(
+    log: WorkLog,
+    isRevision = false
+  ): Promise<WorkLog> {
     const nowIso = new Date().toISOString();
     let existing = this.localWorkLogs.get(log.workLogId);
 
     let revisions: WorkLogRevision[] = existing?.revisions || [];
+
     if (existing && isRevision) {
       revisions = [
         ...revisions,
@@ -44,14 +76,29 @@ class WorkLogService {
     this.localWorkLogs.set(payload.workLogId, payload);
 
     try {
-      await setDoc(doc(db, 'workLogs', payload.workLogId), payload);
+      // Clean the payload before writing to Firestore.
+      const firestorePayload = cleanFirestoreData(payload);
+
+      await setDoc(
+        doc(db, 'workLogs', payload.workLogId),
+        firestorePayload
+      );
+
+      // Save associated resources, cleaning optional fields as well.
       if (payload.resources && payload.resources.length > 0) {
         for (const res of payload.resources) {
-          await setDoc(doc(db, 'workLogResources', res.resourceId), res);
+          await setDoc(
+            doc(db, 'workLogResources', res.resourceId),
+            cleanFirestoreData(res)
+          );
         }
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `workLogs/${payload.workLogId}`);
+      handleFirestoreError(
+        err,
+        OperationType.WRITE,
+        `workLogs/${payload.workLogId}`
+      );
     }
 
     return payload;
@@ -59,18 +106,29 @@ class WorkLogService {
 
   async getWorkLogsByEmployee(employeeId: string): Promise<WorkLog[]> {
     const list: WorkLog[] = [];
+
     try {
       const snaps = await getDocs(collection(db, 'workLogs'));
+
       snaps.forEach((d) => {
         const item = d.data() as WorkLog;
-        if (item.employeeId === employeeId) list.push(item);
+
+        if (item.employeeId === employeeId) {
+          list.push(item);
+        }
       });
     } catch (err) {
-      console.warn('Firestore work logs read, using local cache:', err);
+      console.warn(
+        'Firestore work logs read, using local cache:',
+        err
+      );
     }
 
     this.localWorkLogs.forEach((log) => {
-      if (log.employeeId === employeeId && !list.some((l) => l.workLogId === log.workLogId)) {
+      if (
+        log.employeeId === employeeId &&
+        !list.some((l) => l.workLogId === log.workLogId)
+      ) {
         list.push(log);
       }
     });
@@ -80,11 +138,18 @@ class WorkLogService {
 
   async getAllWorkLogs(): Promise<WorkLog[]> {
     const list: WorkLog[] = [];
+
     try {
       const snaps = await getDocs(collection(db, 'workLogs'));
-      snaps.forEach((d) => list.push(d.data() as WorkLog));
+
+      snaps.forEach((d) => {
+        list.push(d.data() as WorkLog);
+      });
     } catch (err) {
-      console.warn('Firestore all work logs read, using local cache:', err);
+      console.warn(
+        'Firestore all work logs read, using local cache:',
+        err
+      );
     }
 
     this.localWorkLogs.forEach((log) => {
@@ -102,7 +167,10 @@ class WorkLogService {
     reviewRemarks: string
   ): Promise<WorkLog> {
     const item = this.localWorkLogs.get(workLogId);
-    if (!item) throw new Error('Work log not found');
+
+    if (!item) {
+      throw new Error('Work log not found');
+    }
 
     item.submissionStatus = 'reviewed';
     item.reviewedBy = reviewerName;
@@ -111,15 +179,22 @@ class WorkLogService {
     item.updatedAt = new Date().toISOString();
 
     try {
-      await updateDoc(doc(db, 'workLogs', workLogId), {
-        submissionStatus: 'reviewed',
-        reviewedBy: reviewerName,
-        reviewRemarks,
-        reviewedAt: item.reviewedAt,
-        updatedAt: item.updatedAt,
-      });
+      await updateDoc(
+        doc(db, 'workLogs', workLogId),
+        cleanFirestoreData({
+          submissionStatus: 'reviewed',
+          reviewedBy: reviewerName,
+          reviewRemarks,
+          reviewedAt: item.reviewedAt,
+          updatedAt: item.updatedAt,
+        })
+      );
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `workLogs/${workLogId}`);
+      handleFirestoreError(
+        err,
+        OperationType.UPDATE,
+        `workLogs/${workLogId}`
+      );
     }
 
     return item;
