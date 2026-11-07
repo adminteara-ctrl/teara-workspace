@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Sidebar } from './components/layout/Sidebar';
@@ -16,6 +17,7 @@ import { ScheduleConfig } from './components/admin/ScheduleConfig';
 import { AuditTrailView } from './components/admin/AuditTrailView';
 import { NotificationDrawer } from './components/notifications/NotificationDrawer';
 import { LoginView } from './components/auth/LoginView';
+
 import {
   AttendanceRecord,
   WorkLog,
@@ -23,26 +25,40 @@ import {
   WorkMode,
   NotificationItem,
 } from './types';
+
 import { attendanceService } from './services/attendanceService';
 import { workLogService } from './services/workLogService';
 import { adminService } from './services/adminService';
-import { Menu, X, Sparkles } from 'lucide-react';
+import { Menu } from 'lucide-react';
 
 function WorkHubMain() {
   const { currentUser, isAdmin, loading, allUsers } = useAuth();
-  const [currentTab, setCurrentTab] = useState<string>(isAdmin ? 'admin-dashboard' : 'dashboard');
-  const [todayAttendance, setTodayAttendance] = useState<AttendanceRecord | null>(null);
-  const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
+
+  const [currentTab, setCurrentTab] = useState<string>(
+    isAdmin ? 'admin-dashboard' : 'dashboard'
+  );
+
+  const [todayAttendance, setTodayAttendance] =
+    useState<AttendanceRecord | null>(null);
+
+  const [attendanceHistory, setAttendanceHistory] =
+    useState<AttendanceRecord[]>([]);
+
   const [workLogs, setWorkLogs] = useState<WorkLog[]>([]);
-  const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>([]);
+  const [allAttendance, setAllAttendance] =
+    useState<AttendanceRecord[]>([]);
+
   const [allWorkLogs, setAllWorkLogs] = useState<WorkLog[]>([]);
-  const [correctionRequests, setCorrectionRequests] = useState<CorrectionRequest[]>([]);
-  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [correctionRequests, setCorrectionRequests] =
+    useState<CorrectionRequest[]>([]);
+
+  const [notifications, setNotifications] =
+    useState<NotificationItem[]>([]);
+
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [checkInModalOpen, setCheckInModalOpen] = useState(false);
 
-  // Sync tab when switching role (Admin vs Employee)
+  // Keep the correct dashboard selected when the user's role changes.
   useEffect(() => {
     if (isAdmin) {
       if (!currentTab.startsWith('admin-')) {
@@ -53,21 +69,53 @@ function WorkHubMain() {
         setCurrentTab('dashboard');
       }
     }
-  }, [isAdmin]);
+  }, [isAdmin, currentTab]);
 
+  /**
+   * Load data from Firestore.
+   *
+   * Employees retrieve only their own attendance and work logs.
+   * Administrators retrieve the records needed for workforce monitoring.
+   */
   const loadData = useCallback(async () => {
     if (!currentUser) return;
+
     try {
-      const [todayAtt, history, logs, allAtt, allLogs, corrections, notifs] = await Promise.all([
+      const [
+        todayAtt,
+        history,
+        logs,
+        allAtt,
+        allLogs,
+        corrections,
+        notifs,
+      ] = await Promise.all([
         attendanceService.getTodayAttendance(currentUser.uid),
-        attendanceService.getEmployeeAttendanceHistory(currentUser.uid),
+
+        attendanceService.getEmployeeAttendanceHistory(
+          currentUser.uid
+        ),
+
         workLogService.getWorkLogsByEmployee(currentUser.uid),
-        attendanceService.getAllAttendanceRecords(),
-        workLogService.getAllWorkLogs(),
-        attendanceService.getCorrectionRequests(isAdmin ? undefined : currentUser.uid),
-        Promise.resolve(adminService.getNotifications(currentUser.email)),
+
+        isAdmin
+          ? attendanceService.getAllAttendanceRecords()
+          : Promise.resolve([] as AttendanceRecord[]),
+
+        isAdmin
+          ? workLogService.getAllWorkLogs()
+          : Promise.resolve([] as WorkLog[]),
+
+        attendanceService.getCorrectionRequests(
+          isAdmin ? undefined : currentUser.uid
+        ),
+
+        Promise.resolve(
+          adminService.getNotifications(currentUser.email)
+        ),
       ]);
 
+      // Update application state only after successful retrieval.
       setTodayAttendance(todayAtt);
       setAttendanceHistory(history);
       setWorkLogs(logs);
@@ -75,18 +123,28 @@ function WorkHubMain() {
       setAllWorkLogs(allLogs);
       setCorrectionRequests(corrections);
       setNotifications(notifs);
+
     } catch (err) {
-      console.error('Data refresh error:', err);
+      console.error('WorkHub data refresh failed:', err);
+
+      // Propagate the error so the calling component can handle it.
+      throw err;
     }
   }, [currentUser, isAdmin]);
 
+  // Initial data load and reload when the user or role changes.
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (!currentUser || loading) return;
+
+    loadData().catch((err) => {
+      console.error('Initial WorkHub data load failed:', err);
+    });
+  }, [currentUser, loading, loadData]);
 
   // Attendance Actions
   const handleCheckIn = async (mode: WorkMode) => {
     if (!currentUser) return;
+
     try {
       const updated = await attendanceService.checkIn(
         currentUser.uid,
@@ -95,47 +153,71 @@ function WorkHubMain() {
         currentUser.department,
         mode
       );
+
       setTodayAttendance(updated);
-      loadData();
+      await loadData();
+
     } catch (err: any) {
+      console.error('Check-in failed:', err);
       alert(err.message || 'Check-in failed');
     }
   };
 
   const handleStartBreak = async () => {
     if (!currentUser) return;
+
     try {
-      const updated = await attendanceService.startBreak(currentUser.uid, 'Break');
+      const updated = await attendanceService.startBreak(
+        currentUser.uid,
+        'Break'
+      );
+
       setTodayAttendance(updated);
-      loadData();
+      await loadData();
+
     } catch (err: any) {
+      console.error('Break start failed:', err);
       alert(err.message || 'Break failed');
     }
   };
 
   const handleEndBreak = async () => {
     if (!currentUser) return;
+
     try {
-      const updated = await attendanceService.endBreak(currentUser.uid);
+      const updated = await attendanceService.endBreak(
+        currentUser.uid
+      );
+
       setTodayAttendance(updated);
-      loadData();
+      await loadData();
+
     } catch (err: any) {
+      console.error('Break end failed:', err);
       alert(err.message || 'Resume failed');
     }
   };
 
   const handleCheckOut = async () => {
     if (!currentUser) return;
+
     try {
-      const updated = await attendanceService.checkOut(currentUser.uid);
+      const updated = await attendanceService.checkOut(
+        currentUser.uid
+      );
+
       setTodayAttendance(updated);
-      loadData();
+      await loadData();
+
     } catch (err: any) {
+      console.error('Check-out failed:', err);
       alert(err.message || 'Check-out failed');
     }
   };
 
-  const unreadNotifs = notifications.filter((n) => !n.read).length;
+  const unreadNotifs = notifications.filter(
+    (notification) => !notification.read
+  ).length;
 
   if (loading) {
     return (
@@ -144,7 +226,9 @@ function WorkHubMain() {
           <div className="w-12 h-12 rounded-2xl bg-[#192B16] text-[#B29261] font-bold text-2xl flex items-center justify-center mx-auto animate-pulse">
             T
           </div>
-          <p className="text-sm font-semibold tracking-wide">Loading Teara WorkHub...</p>
+          <p className="text-sm font-semibold tracking-wide">
+            Loading Teara WorkHub...
+          </p>
         </div>
       </div>
     );
@@ -156,6 +240,7 @@ function WorkHubMain() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#FEFCF7] text-[#192B16]">
+
       {/* Desktop Sidebar */}
       <div className="hidden lg:block shrink-0">
         <Sidebar
@@ -172,6 +257,7 @@ function WorkHubMain() {
             className="fixed inset-0 bg-black/50 backdrop-blur-xs"
             onClick={() => setMobileMenuOpen(false)}
           />
+
           <div className="relative z-10">
             <Sidebar
               currentTab={currentTab}
@@ -185,9 +271,10 @@ function WorkHubMain() {
         </div>
       )}
 
-      {/* Main Content Area */}
+      {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Mobile top strip for toggling sidebar */}
+
+        {/* Mobile Header */}
         <div className="lg:hidden flex items-center justify-between px-4 py-2 bg-[#192B16] text-white">
           <button
             onClick={() => setMobileMenuOpen(true)}
@@ -195,12 +282,16 @@ function WorkHubMain() {
           >
             <Menu className="w-5 h-5" />
           </button>
+
           <div className="font-bold text-sm tracking-wide flex items-center space-x-1.5">
             <span className="text-[#CDB487]">TEARA</span>
-            <span className="text-xs bg-[#B29261]/25 px-1 rounded">WORKHUB</span>
+            <span className="text-xs bg-[#B29261]/25 px-1 rounded">
+              WORKHUB
+            </span>
           </div>
+
           <div className="text-[10px] text-stone-300 font-medium">
-            {currentUser?.name?.split(' ')[0]}
+            {currentUser.name?.split(' ')[0]}
           </div>
         </div>
 
@@ -215,9 +306,10 @@ function WorkHubMain() {
           unreadNotificationsCount={unreadNotifs}
         />
 
-        {/* View Routing Container */}
+        {/* View Routing */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-[#FEFCF7]">
-          {/* Employee Tabs */}
+
+          {/* Employee Dashboard */}
           {!isAdmin && currentTab === 'dashboard' && (
             <EmployeeDashboard
               todayAttendance={todayAttendance}
@@ -231,6 +323,7 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Employee Attendance */}
           {!isAdmin && currentTab === 'attendance' && (
             <AttendanceView
               todayAttendance={todayAttendance}
@@ -244,6 +337,7 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Employee Work Logs */}
           {!isAdmin && currentTab === 'worklogs' && (
             <WorkLogView
               workLogs={workLogs}
@@ -252,13 +346,19 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Employee History */}
           {!isAdmin && currentTab === 'history' && (
-            <EmployeeHistoryView attendanceHistory={attendanceHistory} />
+            <EmployeeHistoryView
+              attendanceHistory={attendanceHistory}
+            />
           )}
 
-          {!isAdmin && currentTab === 'profile' && <ProfileView />}
+          {/* Employee Profile */}
+          {!isAdmin && currentTab === 'profile' && (
+            <ProfileView />
+          )}
 
-          {/* Admin Tabs */}
+          {/* Admin Dashboard */}
           {isAdmin && currentTab === 'admin-dashboard' && (
             <AdminDashboard
               users={allUsers}
@@ -270,6 +370,7 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Admin Employee Management */}
           {isAdmin && currentTab === 'admin-employees' && (
             <EmployeeManagement
               users={allUsers}
@@ -278,6 +379,7 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Admin Attendance */}
           {isAdmin && currentTab === 'admin-attendance' && (
             <AttendanceMonitoring
               allAttendance={allAttendance}
@@ -286,6 +388,7 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Admin Work Logs */}
           {isAdmin && currentTab === 'admin-worklogs' && (
             <WorkLogMonitoring
               allWorkLogs={allWorkLogs}
@@ -293,6 +396,7 @@ function WorkHubMain() {
             />
           )}
 
+          {/* Admin Reports */}
           {isAdmin && currentTab === 'admin-reports' && (
             <ProductivityReports
               users={allUsers}
@@ -301,13 +405,20 @@ function WorkHubMain() {
             />
           )}
 
-          {isAdmin && currentTab === 'admin-schedule' && <ScheduleConfig />}
+          {/* Admin Schedule */}
+          {isAdmin && currentTab === 'admin-schedule' && (
+            <ScheduleConfig />
+          )}
 
-          {isAdmin && currentTab === 'admin-audit' && <AuditTrailView />}
+          {/* Admin Audit */}
+          {isAdmin && currentTab === 'admin-audit' && (
+            <AuditTrailView />
+          )}
+
         </main>
       </div>
 
-      {/* Transactional Notifications Drawer */}
+      {/* Notifications */}
       <NotificationDrawer
         isOpen={isNotificationOpen}
         onClose={() => setIsNotificationOpen(false)}

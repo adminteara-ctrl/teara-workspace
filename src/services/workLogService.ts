@@ -8,15 +8,20 @@ import {
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
-  setDoc,
+  query,
+  where,
+  writeBatch,
   updateDoc,
 } from 'firebase/firestore';
 
 import { WorkLog, WorkLogRevision } from '../types';
 
-// Recursively remove undefined object properties before Firestore writes.
-// This also handles undefined values inside nested objects and resources.
+/**
+ * Remove undefined values before sending data to Firestore.
+ * Preserve Firestore objects, Dates and other non-plain objects.
+ */
 const cleanFirestoreData = (value: any): any => {
   if (Array.isArray(value)) {
     return value.map((item) =>
@@ -41,154 +46,235 @@ const cleanFirestoreData = (value: any): any => {
 };
 
 class WorkLogService {
-  private localWorkLogs = new Map<string, WorkLog>();
-
+  /**
+   * Create a new work log or update an existing one.
+   */
   async createOrUpdateWorkLog(
     log: WorkLog,
     isRevision = false
   ): Promise<WorkLog> {
-    const nowIso = new Date().toISOString();
-    let existing = this.localWorkLogs.get(log.workLogId);
+    if (!log.workLogId) {
+      throw new Error('A valid work log ID is required.');
+    }
 
-    let revisions: WorkLogRevision[] = existing?.revisions || [];
+    if (!log.employeeId) {
+      throw new Error('Employee ID is missing.');
+    }
 
-    if (existing && isRevision) {
-      revisions = [
-        ...revisions,
-        {
-          timestamp: existing.updatedAt || existing.createdAt,
+    const workLogRef = doc(db, 'workLogs', log.workLogId);
+
+    try {
+      // Retrieve the persisted record to preserve revision history.
+      const existingSnapshot = await getDoc(workLogRef);
+
+      const existing = existingSnapshot.exists()
+        ? (existingSnapshot.data() as WorkLog)
+        : null;
+
+      if (isRevision && !existing) {
+        throw new Error(
+          'The original work log could not be found. Refresh your work logs and try again.'
+        );
+      }
+
+      let revisions: WorkLogRevision[] = existing?.revisions || [];
+
+      if (existing && isRevision) {
+        const previousRevision: WorkLogRevision = {
+          timestamp:
+            existing.updatedAt ||
+            existing.createdAt ||
+            new Date().toISOString(),
           editedBy: log.employeeName,
           workUndertaken: existing.workUndertaken,
           workCompleted: existing.workCompleted,
           pendingWork: existing.pendingWork,
           blockers: existing.blockers,
-        },
-      ];
-    }
+        };
 
-    const payload: WorkLog = {
-      ...log,
-      revisions,
-      updatedAt: nowIso,
-      createdAt: existing?.createdAt || nowIso,
-    };
+        revisions = [...revisions, previousRevision];
+      }
 
-    this.localWorkLogs.set(payload.workLogId, payload);
+      const nowIso = new Date().toISOString();
 
-    try {
-      // Clean the payload before writing to Firestore.
-      const firestorePayload = cleanFirestoreData(payload);
+      const payload: WorkLog = {
+        ...log,
+        revisions,
+        createdAt: existing?.createdAt || log.createdAt || nowIso,
+        updatedAt: nowIso,
+      };
 
-      await setDoc(
-        doc(db, 'workLogs', payload.workLogId),
-        firestorePayload
+      const batch = writeBatch(db);
+
+      batch.set(
+        workLogRef,
+        cleanFirestoreData(payload)
       );
 
-      // Save associated resources, cleaning optional fields as well.
-      if (payload.resources && payload.resources.length > 0) {
-        for (const res of payload.resources) {
-          await setDoc(
-            doc(db, 'workLogResources', res.resourceId),
-            cleanFirestoreData(res)
+      // Save associated resources in the same batch.
+      if (payload.resources?.length) {
+        for (const resource of payload.resources) {
+          const resourceId =
+            (resource as any).resourceId ||
+            (resource as any).id;
+
+          if (!resourceId || typeof resourceId !== 'string') {
+            throw new Error(
+              'An attached resource is missing its resource ID.'
+            );
+          }
+
+          const resourceRef = doc(
+            db,
+            'workLogResources',
+            resourceId
+          );
+
+          batch.set(
+            resourceRef,
+            cleanFirestoreData({
+              ...resource,
+              resourceId,
+              workLogId: payload.workLogId,
+              employeeId: payload.employeeId,
+            })
           );
         }
       }
+
+      // Wait for Firestore to confirm the batch write.
+      await batch.commit();
+
+      return payload;
     } catch (err) {
       handleFirestoreError(
         err,
         OperationType.WRITE,
-        `workLogs/${payload.workLogId}`
+        `workLogs/${log.workLogId}`
       );
     }
-
-    return payload;
   }
 
-  async getWorkLogsByEmployee(employeeId: string): Promise<WorkLog[]> {
-    const list: WorkLog[] = [];
+  /**
+   * Retrieve work logs belonging to an employee.
+   */
+  async getWorkLogsByEmployee(
+    employeeId: string
+  ): Promise<WorkLog[]> {
+    if (!employeeId) {
+      throw new Error('Employee ID is required.');
+    }
 
     try {
-      const snaps = await getDocs(collection(db, 'workLogs'));
+      const workLogsQuery = query(
+        collection(db, 'workLogs'),
+        where('employeeId', '==', employeeId)
+      );
 
-      snaps.forEach((d) => {
-        const item = d.data() as WorkLog;
+      const snapshot = await getDocs(workLogsQuery);
 
-        if (item.employeeId === employeeId) {
-          list.push(item);
-        }
-      });
+      return snapshot.docs
+        .map((document) => {
+          const data = document.data() as WorkLog;
+
+          return {
+            ...data,
+            id: data.id || document.id,
+            workLogId: data.workLogId || document.id,
+          };
+        })
+        .sort((a, b) =>
+          (b.date || '').localeCompare(a.date || '')
+        );
     } catch (err) {
-      console.warn(
-        'Firestore work logs read, using local cache:',
-        err
+      handleFirestoreError(
+        err,
+        OperationType.GET,
+        `workLogs (employee: ${employeeId})`
       );
     }
-
-    this.localWorkLogs.forEach((log) => {
-      if (
-        log.employeeId === employeeId &&
-        !list.some((l) => l.workLogId === log.workLogId)
-      ) {
-        list.push(log);
-      }
-    });
-
-    return list.sort((a, b) => b.date.localeCompare(a.date));
   }
 
+  /**
+   * Retrieve all work logs for administrative monitoring.
+   */
   async getAllWorkLogs(): Promise<WorkLog[]> {
-    const list: WorkLog[] = [];
-
     try {
-      const snaps = await getDocs(collection(db, 'workLogs'));
+      const snapshot = await getDocs(
+        collection(db, 'workLogs')
+      );
 
-      snaps.forEach((d) => {
-        list.push(d.data() as WorkLog);
-      });
+      return snapshot.docs
+        .map((document) => {
+          const data = document.data() as WorkLog;
+
+          return {
+            ...data,
+            id: data.id || document.id,
+            workLogId: data.workLogId || document.id,
+          };
+        })
+        .sort((a, b) =>
+          (b.date || '').localeCompare(a.date || '')
+        );
     } catch (err) {
-      console.warn(
-        'Firestore all work logs read, using local cache:',
-        err
+      handleFirestoreError(
+        err,
+        OperationType.LIST,
+        'workLogs'
       );
     }
-
-    this.localWorkLogs.forEach((log) => {
-      if (!list.some((l) => l.workLogId === log.workLogId)) {
-        list.push(log);
-      }
-    });
-
-    return list.sort((a, b) => b.date.localeCompare(a.date));
   }
 
+  /**
+   * Save administrative review remarks.
+   */
   async reviewWorkLog(
     workLogId: string,
     reviewerName: string,
     reviewRemarks: string
   ): Promise<WorkLog> {
-    const item = this.localWorkLogs.get(workLogId);
-
-    if (!item) {
-      throw new Error('Work log not found');
+    if (!workLogId) {
+      throw new Error('Work log ID is required.');
     }
 
-    item.submissionStatus = 'reviewed';
-    item.reviewedBy = reviewerName;
-    item.reviewRemarks = reviewRemarks;
-    item.reviewedAt = new Date().toISOString();
-    item.updatedAt = new Date().toISOString();
+    if (!reviewerName.trim()) {
+      throw new Error('Reviewer name is required.');
+    }
+
+    const workLogRef = doc(db, 'workLogs', workLogId);
 
     try {
+      const snapshot = await getDoc(workLogRef);
+
+      if (!snapshot.exists()) {
+        throw new Error(
+          'Work log not found in Firestore. Refresh the dashboard and try again.'
+        );
+      }
+
+      const existing = snapshot.data() as WorkLog;
+      const nowIso = new Date().toISOString();
+
+      const reviewUpdate = {
+        submissionStatus: 'reviewed',
+        reviewedBy: reviewerName,
+        reviewRemarks,
+        reviewedAt: nowIso,
+        updatedAt: nowIso,
+      };
+
       await updateDoc(
-        doc(db, 'workLogs', workLogId),
-        cleanFirestoreData({
-          submissionStatus: 'reviewed',
-          reviewedBy: reviewerName,
-          reviewRemarks,
-          reviewedAt: item.reviewedAt,
-          updatedAt: item.updatedAt,
-        })
+        workLogRef,
+        cleanFirestoreData(reviewUpdate)
       );
+
+      return {
+        ...existing,
+        ...reviewUpdate,
+        id: existing.id || snapshot.id,
+        workLogId: existing.workLogId || snapshot.id,
+      } as WorkLog;
     } catch (err) {
       handleFirestoreError(
         err,
@@ -196,8 +282,6 @@ class WorkLogService {
         `workLogs/${workLogId}`
       );
     }
-
-    return item;
   }
 }
 
