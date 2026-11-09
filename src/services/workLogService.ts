@@ -1,238 +1,322 @@
 
-import {
-  db,
-  handleFirestoreError,
-  OperationType,
-} from '../lib/firebase';
+import { auth } from '../lib/firebase';
+import type { WorkLog } from '../types';
 
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  where,
-  writeBatch,
-  updateDoc,
-} from 'firebase/firestore';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
-import { WorkLog, WorkLogRevision } from '../types';
+// --------------------------------------------------
+// RESPONSE TYPES
+// --------------------------------------------------
 
-/**
- * Remove undefined values before sending data to Firestore.
- * Preserve Firestore objects, Dates and other non-plain objects.
- */
-const cleanFirestoreData = (value: any): any => {
-  if (Array.isArray(value)) {
-    return value.map((item) =>
-      item === undefined ? null : cleanFirestoreData(item)
-    );
-  }
+interface WorkLogResponse {
+  workLog: WorkLog | null;
+}
 
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
-  ) {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([_, item]) => item !== undefined)
-        .map(([key, item]) => [key, cleanFirestoreData(item)])
-    );
-  }
+interface WorkLogsResponse {
+  workLogs: WorkLog[];
+}
 
-  return value;
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
+
+const normalizeWorkLog = (
+  data: WorkLog,
+  documentId?: string
+): WorkLog => ({
+  ...data,
+  id: data.id || documentId || data.workLogId,
+  workLogId: data.workLogId || documentId || data.id,
+  revisionNumber: data.revisionNumber || 0,
+  revisions: data.revisions || [],
+  reviewHistory: data.reviewHistory || [],
+  resources: data.resources || [],
+});
+
+const sortWorkLogs = (logs: WorkLog[]): WorkLog[] => {
+  return [...logs].sort((a, b) => {
+    const dateComparison = (b.date || '').localeCompare(a.date || '');
+
+    if (dateComparison !== 0) {
+      return dateComparison;
+    }
+
+    return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+  });
 };
 
+const getAuthToken = async (): Promise<string> => {
+  const user = auth.currentUser;
+
+  if (!user) {
+    throw new Error('You must be signed in to access work logs.');
+  }
+
+  return user.getIdToken();
+};
+
+const apiRequest = async <T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> => {
+  const token = await getAuthToken();
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...options.headers,
+    },
+  });
+
+  const responseText = await response.text();
+
+  let result: any = {};
+
+  if (responseText) {
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      throw new Error(
+        `Invalid server response (${response.status}).`
+      );
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      result.error ||
+      result.message ||
+      `Work-log request failed (${response.status}).`
+    );
+  }
+
+  return result as T;
+};
+
+// --------------------------------------------------
+// WORK LOG SERVICE
+// --------------------------------------------------
+
 class WorkLogService {
-  /**
-   * Create a new work log or update an existing one.
-   */
+
+  // ------------------------------------------------
+  // CREATE / UPDATE / RESUBMIT
+  // ------------------------------------------------
+
   async createOrUpdateWorkLog(
     log: WorkLog,
     isRevision = false
   ): Promise<WorkLog> {
-    if (!log.workLogId) {
+
+    if (!log.workLogId?.trim()) {
       throw new Error('A valid work log ID is required.');
     }
 
-    if (!log.employeeId) {
+    if (!log.employeeId?.trim()) {
       throw new Error('Employee ID is missing.');
     }
 
-    const workLogRef = doc(db, 'workLogs', log.workLogId);
+    if (!log.date?.trim()) {
+      throw new Error('Work date is required.');
+    }
 
-    try {
-      // Retrieve the persisted record to preserve revision history.
-      const existingSnapshot = await getDoc(workLogRef);
+    if (!log.workUndertaken?.trim()) {
+      throw new Error('Please describe the work undertaken.');
+    }
 
-      const existing = existingSnapshot.exists()
-        ? (existingSnapshot.data() as WorkLog)
-        : null;
-
-      if (isRevision && !existing) {
-        throw new Error(
-          'The original work log could not be found. Refresh your work logs and try again.'
-        );
-      }
-
-      let revisions: WorkLogRevision[] = existing?.revisions || [];
-
-      if (existing && isRevision) {
-        const previousRevision: WorkLogRevision = {
-          timestamp:
-            existing.updatedAt ||
-            existing.createdAt ||
-            new Date().toISOString(),
-          editedBy: log.employeeName,
-          workUndertaken: existing.workUndertaken,
-          workCompleted: existing.workCompleted,
-          pendingWork: existing.pendingWork,
-          blockers: existing.blockers,
-        };
-
-        revisions = [...revisions, previousRevision];
-      }
-
-      const nowIso = new Date().toISOString();
-
-      const payload: WorkLog = {
-        ...log,
-        revisions,
-        createdAt: existing?.createdAt || log.createdAt || nowIso,
-        updatedAt: nowIso,
-      };
-
-      const batch = writeBatch(db);
-
-      batch.set(
-        workLogRef,
-        cleanFirestoreData(payload)
-      );
-
-      // Save associated resources in the same batch.
-      if (payload.resources?.length) {
-        for (const resource of payload.resources) {
-          const resourceId =
-            (resource as any).resourceId ||
-            (resource as any).id;
-
-          if (!resourceId || typeof resourceId !== 'string') {
-            throw new Error(
-              'An attached resource is missing its resource ID.'
-            );
-          }
-
-          const resourceRef = doc(
-            db,
-            'workLogResources',
-            resourceId
-          );
-
-          batch.set(
-            resourceRef,
-            cleanFirestoreData({
-              ...resource,
-              resourceId,
-              workLogId: payload.workLogId,
-              employeeId: payload.employeeId,
-            })
-          );
-        }
-      }
-
-      // Wait for Firestore to confirm the batch write.
-      await batch.commit();
-
-      return payload;
-    } catch (err) {
-      handleFirestoreError(
-        err,
-        OperationType.WRITE,
-        `workLogs/${log.workLogId}`
+    if (
+      isRevision &&
+      log.submissionStatus !== 'submitted'
+    ) {
+      throw new Error(
+        'A revised work log must be submitted for administrative review.'
       );
     }
+
+    const response = await apiRequest<WorkLogResponse>(
+      '/work-logs',
+      {
+        method: 'POST',
+        body: JSON.stringify(log),
+      }
+    );
+
+    if (!response.workLog) {
+      throw new Error(
+        'The server did not return the saved work log.'
+      );
+    }
+
+    return normalizeWorkLog(response.workLog, log.workLogId);
   }
 
-  /**
-   * Retrieve work logs belonging to an employee.
-   */
+  // ------------------------------------------------
+  // EMPLOYEE WORK LOG RETRIEVAL
+  // ------------------------------------------------
+
   async getWorkLogsByEmployee(
     employeeId: string
   ): Promise<WorkLog[]> {
+
     if (!employeeId) {
       throw new Error('Employee ID is required.');
     }
 
-    try {
-      const workLogsQuery = query(
-        collection(db, 'workLogs'),
-        where('employeeId', '==', employeeId)
-      );
+    const user = auth.currentUser;
 
-      const snapshot = await getDocs(workLogsQuery);
+    if (!user) {
+      throw new Error('You must be signed in.');
+    }
 
-      return snapshot.docs
-        .map((document) => {
-          const data = document.data() as WorkLog;
-
-          return {
-            ...data,
-            id: data.id || document.id,
-            workLogId: data.workLogId || document.id,
-          };
-        })
-        .sort((a, b) =>
-          (b.date || '').localeCompare(a.date || '')
-        );
-    } catch (err) {
-      handleFirestoreError(
-        err,
-        OperationType.GET,
-        `workLogs (employee: ${employeeId})`
+    if (user.uid !== employeeId) {
+      throw new Error(
+        'You cannot retrieve another employee’s work logs.'
       );
     }
+
+    const response = await apiRequest<WorkLogsResponse>(
+      '/work-logs/mine'
+    );
+
+    return sortWorkLogs(
+      (response.workLogs || []).map((log) =>
+        normalizeWorkLog(log)
+      )
+    );
   }
 
-  /**
-   * Retrieve all work logs for administrative monitoring.
-   */
+  // ------------------------------------------------
+  // ADMIN WORK LOG RETRIEVAL
+  // ------------------------------------------------
+
   async getAllWorkLogs(): Promise<WorkLog[]> {
-    try {
-      const snapshot = await getDocs(
-        collection(db, 'workLogs')
-      );
 
-      return snapshot.docs
-        .map((document) => {
-          const data = document.data() as WorkLog;
+    const response = await apiRequest<WorkLogsResponse>(
+      '/work-logs'
+    );
 
-          return {
-            ...data,
-            id: data.id || document.id,
-            workLogId: data.workLogId || document.id,
-          };
-        })
-        .sort((a, b) =>
-          (b.date || '').localeCompare(a.date || '')
-        );
-    } catch (err) {
-      handleFirestoreError(
-        err,
-        OperationType.LIST,
-        'workLogs'
-      );
-    }
+    return sortWorkLogs(
+      (response.workLogs || []).map((log) =>
+        normalizeWorkLog(log)
+      )
+    );
   }
 
-  /**
-   * Save administrative review remarks.
-   */
+  // ------------------------------------------------
+  // MARK AS UNDER REVIEW
+  // ------------------------------------------------
+
+  async markWorkLogUnderReview(
+    workLogId: string
+  ): Promise<WorkLog> {
+
+    if (!workLogId) {
+      throw new Error('Work log ID is required.');
+    }
+
+    const response = await apiRequest<WorkLogResponse>(
+      `/work-logs/${encodeURIComponent(workLogId)}/under-review`,
+      {
+        method: 'PATCH',
+      }
+    );
+
+    if (!response.workLog) {
+      throw new Error('The server did not return the updated work log.');
+    }
+
+    return normalizeWorkLog(response.workLog, workLogId);
+  }
+
+  // ------------------------------------------------
+  // ADMIN APPROVAL / REVIEW
+  // ------------------------------------------------
+
   async reviewWorkLog(
     workLogId: string,
     reviewerName: string,
-    reviewRemarks: string
+    reviewRemarks: string,
+    reviewerId = 'admin'
+  ): Promise<WorkLog> {
+
+    if (!workLogId) {
+      throw new Error('Work log ID is required.');
+    }
+
+    if (!reviewerName.trim()) {
+      throw new Error('Reviewer name is required.');
+    }
+
+    const response = await apiRequest<WorkLogResponse>(
+      `/work-logs/${encodeURIComponent(workLogId)}/review`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          reviewRemarks: reviewRemarks.trim(),
+        }),
+      }
+    );
+
+    if (!response.workLog) {
+      throw new Error('The server did not return the reviewed work log.');
+    }
+
+    return normalizeWorkLog(response.workLog, workLogId);
+  }
+
+  // ------------------------------------------------
+  // ADMIN REQUESTS REVISION
+  // ------------------------------------------------
+
+  async requestWorkLogRevision(
+    workLogId: string,
+    reviewerName: string,
+    revisionRemarks: string,
+    reviewerId = 'admin'
+  ): Promise<WorkLog> {
+
+    if (!workLogId) {
+      throw new Error('Work log ID is required.');
+    }
+
+    if (!reviewerName.trim()) {
+      throw new Error('Reviewer name is required.');
+    }
+
+    if (!revisionRemarks.trim()) {
+      throw new Error(
+        'Please provide a reason for requesting a revision.'
+      );
+    }
+
+    const response = await apiRequest<WorkLogResponse>(
+      `/work-logs/${encodeURIComponent(workLogId)}/request-revision`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          revisionRemarks: revisionRemarks.trim(),
+        }),
+      }
+    );
+
+    if (!response.workLog) {
+      throw new Error('The server did not return the revised work log.');
+    }
+
+    return normalizeWorkLog(response.workLog, workLogId);
+  }
+
+  // ------------------------------------------------
+  // ADMIN REJECTS WORK LOG (TERMINAL DECISION)
+  // ------------------------------------------------
+
+  async rejectWorkLog(
+    workLogId: string,
+    reviewerName: string,
+    reviewRemarks: string,
+    reviewerId = 'admin'
   ): Promise<WorkLog> {
     if (!workLogId) {
       throw new Error('Work log ID is required.');
@@ -242,46 +326,48 @@ class WorkLogService {
       throw new Error('Reviewer name is required.');
     }
 
-    const workLogRef = doc(db, 'workLogs', workLogId);
-
-    try {
-      const snapshot = await getDoc(workLogRef);
-
-      if (!snapshot.exists()) {
-        throw new Error(
-          'Work log not found in Firestore. Refresh the dashboard and try again.'
-        );
-      }
-
-      const existing = snapshot.data() as WorkLog;
-      const nowIso = new Date().toISOString();
-
-      const reviewUpdate = {
-        submissionStatus: 'reviewed',
-        reviewedBy: reviewerName,
-        reviewRemarks,
-        reviewedAt: nowIso,
-        updatedAt: nowIso,
-      };
-
-      await updateDoc(
-        workLogRef,
-        cleanFirestoreData(reviewUpdate)
-      );
-
-      return {
-        ...existing,
-        ...reviewUpdate,
-        id: existing.id || snapshot.id,
-        workLogId: existing.workLogId || snapshot.id,
-      } as WorkLog;
-    } catch (err) {
-      handleFirestoreError(
-        err,
-        OperationType.UPDATE,
-        `workLogs/${workLogId}`
-      );
+    if (!reviewRemarks.trim()) {
+      throw new Error('Please provide a reason for rejecting this work log.');
     }
+
+    const response = await apiRequest<WorkLogResponse>(
+      `/work-logs/${encodeURIComponent(workLogId)}/reject`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          reviewRemarks: reviewRemarks.trim(),
+        }),
+      }
+    );
+
+    if (!response.workLog) {
+      throw new Error('The server did not return the rejected work log.');
+    }
+
+    return normalizeWorkLog(response.workLog, workLogId);
+  }
+
+  // ------------------------------------------------
+  // GET SINGLE WORK LOG
+  // ------------------------------------------------
+
+  async getWorkLogById(
+    workLogId: string
+  ): Promise<WorkLog | null> {
+
+    if (!workLogId) {
+      throw new Error('Work log ID is required.');
+    }
+
+    const response = await apiRequest<WorkLogResponse>(
+      `/work-logs/${encodeURIComponent(workLogId)}`
+    );
+
+    if (!response.workLog) {
+      return null;
+    }
+
+    return normalizeWorkLog(response.workLog, workLogId);
   }
 }
 

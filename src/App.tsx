@@ -24,6 +24,7 @@ import {
   CorrectionRequest,
   WorkMode,
   NotificationItem,
+  UserProfile,
 } from './types';
 
 import { attendanceService } from './services/attendanceService';
@@ -33,6 +34,8 @@ import { Menu } from 'lucide-react';
 
 function WorkHubMain() {
   const { currentUser, isAdmin, loading, allUsers } = useAuth();
+
+  const [directoryUsers, setDirectoryUsers] = useState<UserProfile[]>(allUsers);
 
   const [currentTab, setCurrentTab] = useState<string>(
     isAdmin ? 'admin-dashboard' : 'dashboard'
@@ -45,10 +48,12 @@ function WorkHubMain() {
     useState<AttendanceRecord[]>([]);
 
   const [workLogs, setWorkLogs] = useState<WorkLog[]>([]);
+
   const [allAttendance, setAllAttendance] =
     useState<AttendanceRecord[]>([]);
 
   const [allWorkLogs, setAllWorkLogs] = useState<WorkLog[]>([]);
+
   const [correctionRequests, setCorrectionRequests] =
     useState<CorrectionRequest[]>([]);
 
@@ -72,72 +77,83 @@ function WorkHubMain() {
   }, [isAdmin, currentTab]);
 
   /**
-   * Load data from Firestore.
+   * Load application data.
    *
-   * Employees retrieve only their own attendance and work logs.
-   * Administrators retrieve the records needed for workforce monitoring.
+   * Attendance and correction requests are loaded independently
+   * of work logs so a work-log permission error cannot prevent
+   * the attendance dashboard from displaying.
    */
   const loadData = useCallback(async () => {
     if (!currentUser) return;
 
-    try {
-      const [
-        todayAtt,
-        history,
-        logs,
-        allAtt,
-        allLogs,
-        corrections,
-        notifs,
-      ] = await Promise.all([
-        attendanceService.getTodayAttendance(currentUser.uid),
+    const [
+      todayAtt,
+      history,
+      logs,
+      allAtt,
+      allLogs,
+      corrections,
+      notifs,
+      directory,
+    ] = await Promise.all([
+      attendanceService.getTodayAttendance(currentUser.uid),
 
-        attendanceService.getEmployeeAttendanceHistory(
-          currentUser.uid
-        ),
+      attendanceService.getEmployeeAttendanceHistory(
+        currentUser.uid
+      ),
 
-        workLogService.getWorkLogsByEmployee(currentUser.uid),
+      workLogService
+        .getWorkLogsByEmployee(currentUser.uid)
+        .catch((error) => {
+          console.error('Work log loading failed:', error);
+          return [] as WorkLog[];
+        }),
 
-        isAdmin
-          ? attendanceService.getAllAttendanceRecords()
-          : Promise.resolve([] as AttendanceRecord[]),
+      isAdmin
+        ? attendanceService.getAllAttendanceRecords()
+        : Promise.resolve([] as AttendanceRecord[]),
 
-        isAdmin
-          ? workLogService.getAllWorkLogs()
-          : Promise.resolve([] as WorkLog[]),
+      isAdmin
+        ? workLogService.getAllWorkLogs().catch((error) => {
+          console.error('All work logs loading failed:', error);
+          return [] as WorkLog[];
+        })
+        : Promise.resolve([] as WorkLog[]),
 
-        attendanceService.getCorrectionRequests(
-          isAdmin ? undefined : currentUser.uid
-        ),
+      attendanceService.getCorrectionRequests(
+        isAdmin ? undefined : currentUser.uid
+      ),
 
-        Promise.resolve(
-          adminService.getNotifications(currentUser.email)
-        ),
-      ]);
+      Promise.resolve(
+        adminService.getNotifications(currentUser.email)
+      ),
 
-      // Update application state only after successful retrieval.
-      setTodayAttendance(todayAtt);
-      setAttendanceHistory(history);
-      setWorkLogs(logs);
-      setAllAttendance(allAtt);
-      setAllWorkLogs(allLogs);
-      setCorrectionRequests(corrections);
-      setNotifications(notifs);
+      isAdmin
+        ? adminService.getAllUsers().catch((error) => {
+          console.error('Employee directory loading failed:', error);
+          return [] as UserProfile[];
+        })
+        : Promise.resolve([] as UserProfile[]),
+    ]);
 
-    } catch (err) {
-      console.error('WorkHub data refresh failed:', err);
-
-      // Propagate the error so the calling component can handle it.
-      throw err;
-    }
+    // Update each application state after the corresponding
+    // data retrieval has completed.
+    setTodayAttendance(todayAtt);
+    setAttendanceHistory(history);
+    setWorkLogs(logs);
+    setAllAttendance(allAtt);
+    setAllWorkLogs(allLogs);
+    setCorrectionRequests(corrections);
+    setNotifications(notifs);
+    if (isAdmin) setDirectoryUsers(directory);
   }, [currentUser, isAdmin]);
 
   // Initial data load and reload when the user or role changes.
   useEffect(() => {
     if (!currentUser || loading) return;
 
-    loadData().catch((err) => {
-      console.error('Initial WorkHub data load failed:', err);
+    loadData().catch((error) => {
+      console.error('Initial WorkHub data load failed:', error);
     });
   }, [currentUser, loading, loadData]);
 
@@ -361,7 +377,7 @@ function WorkHubMain() {
           {/* Admin Dashboard */}
           {isAdmin && currentTab === 'admin-dashboard' && (
             <AdminDashboard
-              users={allUsers}
+              users={directoryUsers}
               allAttendance={allAttendance}
               allWorkLogs={allWorkLogs}
               correctionRequests={correctionRequests}
@@ -373,7 +389,7 @@ function WorkHubMain() {
           {/* Admin Employee Management */}
           {isAdmin && currentTab === 'admin-employees' && (
             <EmployeeManagement
-              users={allUsers}
+              users={directoryUsers}
               allAttendance={allAttendance}
               onRefreshData={loadData}
             />
@@ -399,7 +415,7 @@ function WorkHubMain() {
           {/* Admin Reports */}
           {isAdmin && currentTab === 'admin-reports' && (
             <ProductivityReports
-              users={allUsers}
+              users={directoryUsers}
               allAttendance={allAttendance}
               allWorkLogs={allWorkLogs}
             />

@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  ReactNode,
+} from 'react';
+
 import {
   auth,
   db,
@@ -9,222 +17,246 @@ import {
   handleFirestoreError,
   OperationType,
 } from '../lib/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { UserProfile, UserRole } from '../types';
 
-export interface PredefinedUser extends UserProfile {
-  password: string;
-}
+import {
+  signInWithEmailAndPassword,
+  User as FirebaseUser,
+} from 'firebase/auth';
 
-export const PREDEFINED_USERS: PredefinedUser[] = [
-  {
-    uid: 'user_admin',
-    username: 'admin',
-    password: 'admin123',
-    name: 'Admin',
-    email: 'admin@teara.internal',
-    role: 'admin',
-    department: 'R&D',
-    jobTitle: 'R&D Lead & Administrator',
-    accountStatus: 'active',
-    workModePreference: 'hybrid',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    uid: 'user_kunal',
-    username: 'kunal',
-    password: 'kunal123',
-    name: 'Kunal',
-    email: 'kunal@teara.internal',
-    role: 'employee',
-    department: 'R&D',
-    jobTitle: 'R&D Engineer',
-    accountStatus: 'active',
-    workModePreference: 'office',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    uid: 'user_ayan',
-    username: 'ayan',
-    password: 'ayan123',
-    name: 'Ayan',
-    email: 'ayan@teara.internal',
-    role: 'employee',
-    department: 'R&D',
-    jobTitle: 'R&D Engineer',
-    accountStatus: 'active',
-    workModePreference: 'hybrid',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    uid: 'user_tanmoy',
-    username: 'tanmoy',
-    password: 'tanmoy123',
-    name: 'Tanmoy',
-    email: 'tanmoy@teara.internal',
-    role: 'employee',
-    department: 'R&D',
-    jobTitle: 'R&D Engineer',
-    accountStatus: 'active',
-    workModePreference: 'office',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    uid: 'user_tanisha',
-    username: 'tanisha',
-    password: 'tanisha123',
-    name: 'Tanisha',
-    email: 'tanisha@teara.internal',
-    role: 'employee',
-    department: 'R&D',
-    jobTitle: 'R&D Engineer',
-    accountStatus: 'active',
-    workModePreference: 'home',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
+import {
+  doc,
+  getDoc,
+  updateDoc,
+} from 'firebase/firestore';
+
+import { UserProfile } from '../types';
 
 interface AuthContextType {
   currentUser: UserProfile | null;
   loading: boolean;
   isAdmin: boolean;
-  loginWithCredentials: (usernameOrEmail: string, password: string) => Promise<boolean>;
+  loginWithCredentials: (
+    usernameOrEmail: string,
+    password: string
+  ) => Promise<boolean>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
-  switchUser: (uid: string) => void;
   allUsers: UserProfile[];
-  updateCurrentUserProfile: (data: Partial<UserProfile>) => Promise<void>;
+  updateCurrentUserProfile: (
+    data: Partial<UserProfile>
+  ) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [allUsers, setAllUsers] = useState<UserProfile[]>(PREDEFINED_USERS);
+  const [loading, setLoading] = useState(true);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
 
-  // Synchronize 5 predefined users into Firestore on startup
+  const loadUserProfile = async (
+    firebaseUser: FirebaseUser
+  ): Promise<UserProfile | null> => {
+    const userRef = doc(db, 'users', firebaseUser.uid);
+    const userSnapshot = await getDoc(userRef);
+
+    if (!userSnapshot.exists()) {
+      return null;
+    }
+
+    const profile = userSnapshot.data() as UserProfile;
+
+    if (
+      profile.uid !== firebaseUser.uid ||
+      profile.accountStatus !== 'active'
+    ) {
+      return null;
+    }
+
+    return profile;
+  };
+
+  // Restore and monitor the Firebase Authentication session.
   useEffect(() => {
-    async function syncUsersToFirestore() {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setLoading(true);
+
       try {
-        for (const u of PREDEFINED_USERS) {
-          const userRef = doc(db, 'users', u.uid);
-          const snap = await getDoc(userRef);
-          if (!snap.exists()) {
-            await setDoc(userRef, {
-              uid: u.uid,
-              username: u.username,
-              name: u.name,
-              email: u.email,
-              role: u.role,
-              department: u.department,
-              jobTitle: u.jobTitle,
-              accountStatus: u.accountStatus,
-              workModePreference: u.workModePreference,
-              createdAt: u.createdAt,
-              updatedAt: u.updatedAt,
-            });
-          }
+        if (!firebaseUser) {
+          setCurrentUser(null);
+          setAllUsers([]);
+          setLoading(false);
+          return;
         }
-      } catch (err) {
-        console.info('Predefined user sync note:', err);
-      }
-    }
-    syncUsersToFirestore();
-  }, []);
 
-  // Check saved session or auth state
-  useEffect(() => {
-    const savedUserUid = localStorage.getItem('teara_logged_in_uid');
-    if (savedUserUid) {
-      const found = PREDEFINED_USERS.find((u) => u.uid === savedUserUid);
-      if (found) {
-        setCurrentUser(found);
-      } else {
+        const profile = await loadUserProfile(firebaseUser);
+
+        if (!profile) {
+          console.warn('No valid active WorkHub profile for this account.');
+          await fbSignOut(auth);
+          setCurrentUser(null);
+          setAllUsers([]);
+          setLoading(false);
+          return;
+        }
+
+        setCurrentUser(profile);
+
+        if (profile.role === 'admin') {
+          try {
+            const token = await firebaseUser.getIdToken();
+            const response = await fetch('/api/admin/users', {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+              throw new Error(
+                result.error || 'Unable to load the employee directory.'
+              );
+            }
+
+            const users = Array.isArray(result.users)
+              ? result.users as UserProfile[]
+              : [];
+
+            setAllUsers(
+              users.sort((a, b) =>
+                (a.name || '').localeCompare(b.name || '')
+              )
+            );
+          } catch (error) {
+            console.error('Unable to load employee directory:', error);
+            setAllUsers([]);
+          }
+        } else {
+          setAllUsers([]);
+        }
+      } catch (error) {
+        console.error('Authentication session verification failed:', error);
         setCurrentUser(null);
+        setAllUsers([]);
+      } finally {
+        setLoading(false);
       }
-    } else {
-      // Default to null so user sees the Login Page first
-      setCurrentUser(null);
-    }
-    setLoading(false);
+    });
+
+    return unsubscribe;
   }, []);
 
-  const loginWithCredentials = async (usernameOrEmail: string, password: string): Promise<boolean> => {
-    const cleanInput = usernameOrEmail.trim().toLowerCase();
-    const cleanPass = password.trim();
-
-    const matched = PREDEFINED_USERS.find(
-      (u) =>
-        ((u.username && u.username.toLowerCase() === cleanInput) ||
-          u.email.toLowerCase() === cleanInput ||
-          (cleanInput === 'admin.teara@gmail.com' && u.username === 'admin')) &&
-        u.password === cleanPass
-    );
-
-    if (matched) {
-      setCurrentUser(matched);
-      localStorage.setItem('teara_logged_in_uid', matched.uid);
-      return true;
-    }
-    return false;
-  };
-
-  const handleGoogleSignIn = async () => {
+  const loginWithCredentials = async (
+    usernameOrEmail: string,
+    password: string
+  ): Promise<boolean> => {
     try {
-      const res = await signInWithPopup(auth, googleProvider);
-      if (res.user) {
-        const isAdminUser =
-          res.user.email?.toLowerCase() === 'admin.teara@gmail.com' ||
-          res.user.email?.includes('admin');
-        const user = isAdminUser ? PREDEFINED_USERS[0] : PREDEFINED_USERS[1];
-        setCurrentUser(user);
-        localStorage.setItem('teara_logged_in_uid', user.uid);
+      const cleanInput = usernameOrEmail.trim().toLowerCase();
+
+      if (!cleanInput || !password) {
+        return false;
       }
-    } catch (err) {
-      console.warn('Google sign in popup fallback:', err);
-      setCurrentUser(PREDEFINED_USERS[0]);
-      localStorage.setItem('teara_logged_in_uid', PREDEFINED_USERS[0].uid);
+
+      let email = cleanInput;
+
+      // Resolve usernames through the backend.
+      if (!cleanInput.includes('@')) {
+        const response = await fetch('/api/auth/resolve-username', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            username: cleanInput,
+          }),
+        });
+
+        if (!response.ok) {
+          return false;
+        }
+
+        const result = await response.json();
+        email = result.email;
+
+        if (typeof email !== 'string' || !email.includes('@')) {
+          return false;
+        }
+      }
+
+      await signInWithEmailAndPassword(auth, email, password);
+
+      // The auth-state listener will load the Firestore profile.
+      return true;
+    } catch (error) {
+      console.warn('Credential sign-in failed:', error);
+      return false;
     }
   };
 
-  const handleSignOut = async () => {
+  const handleGoogleSignIn = async (): Promise<void> => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+
+      // The auth-state listener validates the Firestore profile.
+      // No automatic admin or employee assignment is performed.
+    } catch (error) {
+      console.error('Google sign-in failed:', error);
+      throw error;
+    }
+  };
+
+  const handleSignOut = async (): Promise<void> => {
     try {
       await fbSignOut(auth);
-    } catch (err) {
-      console.error(err);
-    }
-    setCurrentUser(null);
-    localStorage.removeItem('teara_logged_in_uid');
-  };
-
-  const switchUser = (uid: string) => {
-    const selected = PREDEFINED_USERS.find((u) => u.uid === uid);
-    if (selected) {
-      setCurrentUser(selected);
-      localStorage.setItem('teara_logged_in_uid', selected.uid);
+    } catch (error) {
+      console.error('Sign-out failed:', error);
+      throw error;
     }
   };
 
-  const updateCurrentUserProfile = async (data: Partial<UserProfile>) => {
-    if (!currentUser) return;
-    const updated = {
-      ...currentUser,
-      ...data,
-      updatedAt: new Date().toISOString(),
-    };
-    setCurrentUser(updated);
+  const updateCurrentUserProfile = async (
+    data: Partial<UserProfile>
+  ): Promise<void> => {
+    if (!currentUser) {
+      throw new Error('You must be signed in to update your profile.');
+    }
+
+    // Users must not be able to change their own identity or permissions.
+    const safeChanges = { ...data };
+
+    delete safeChanges.uid;
+    delete safeChanges.email;
+    delete safeChanges.username;
+    delete safeChanges.role;
+    delete safeChanges.accountStatus;
+    delete safeChanges.createdAt;
+
+    const updatedAt = new Date().toISOString();
 
     try {
       const userRef = doc(db, 'users', currentUser.uid);
-      await setDoc(userRef, updated, { merge: true });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}`);
+
+      await updateDoc(userRef, {
+        ...safeChanges,
+        updatedAt,
+      });
+
+      setCurrentUser((previous) =>
+        previous
+          ? {
+            ...previous,
+            ...safeChanges,
+            updatedAt,
+          }
+          : null
+      );
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `users/${currentUser.uid}`
+      );
+      throw error;
     }
   };
 
@@ -239,7 +271,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loginWithCredentials,
         signInWithGoogle: handleGoogleSignIn,
         signOut: handleSignOut,
-        switchUser,
         allUsers,
         updateCurrentUserProfile,
       }}
@@ -251,8 +282,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
+
   if (!context) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
+
   return context;
 }

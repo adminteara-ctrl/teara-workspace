@@ -3,8 +3,18 @@ export type UserRole = 'admin' | 'employee';
 export type AccountStatus = 'active' | 'inactive';
 export type WorkMode = 'office' | 'home';
 export type AttendanceStatus = 'checked_in' | 'on_break' | 'checked_out';
-export type SubmissionStatus = 'draft' | 'submitted' | 'reviewed';
+
+export type SubmissionStatus =
+  | 'draft'
+  | 'submitted'
+  | 'under_review'
+  | 'revision_requested'
+  | 'reviewed'
+  | 'rejected';
+
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export type ReviewStatus = 'approved' | 'revision_requested' | 'rejected';
 
 export type ResourceType =
   | 'jira'
@@ -17,6 +27,10 @@ export type ResourceType =
   | 'research'
   | 'file'
   | 'other';
+
+// --------------------------------------------------
+// USER
+// --------------------------------------------------
 
 export interface UserProfile {
   uid: string;
@@ -33,6 +47,10 @@ export interface UserProfile {
   updatedAt: string;
 }
 
+// --------------------------------------------------
+// ATTENDANCE
+// --------------------------------------------------
+
 export interface AttendanceRecord {
   id: string;
   attendanceId: string;
@@ -40,7 +58,7 @@ export interface AttendanceRecord {
   employeeName: string;
   employeeEmail: string;
   department: string;
-  workDate: string; // YYYY-MM-DD
+  workDate: string;
   workMode: WorkMode;
   status: AttendanceStatus;
   totalWorkingSeconds: number;
@@ -79,6 +97,10 @@ export interface BreakRecord {
   reason?: string;
 }
 
+// --------------------------------------------------
+// WORK LOG RESOURCES
+// --------------------------------------------------
+
 export interface WorkLogResource {
   id: string;
   resourceId: string;
@@ -89,58 +111,162 @@ export interface WorkLogResource {
   resourceType: ResourceType;
   fileName?: string;
   fileSize?: number;
-  fileDataUrl?: string; // Stored base64 or storage url for uploads
+
+  // Prefer Firebase Storage URLs for uploaded files.
+  // Legacy base64 data URLs remain optional for compatibility.
+  fileDataUrl?: string;
+
   createdAt: string;
 }
 
+// --------------------------------------------------
+// WORK LOG SNAPSHOT
+// --------------------------------------------------
+
+/**
+ * Represents the content of a work-log version.
+ * Used to preserve previously submitted content.
+ */
+export interface WorkLogSnapshot {
+  date: string;
+  workUndertaken: string;
+  workCompleted: string;
+  pendingWork: string;
+  blockers: string;
+  remarks?: string;
+  attendanceId?: string;
+  sessionId?: string;
+  loginTime?: string;
+  logoutTime?: string;
+  jiraTaskId?: string;
+  jiraTaskUrl?: string;
+  resources?: WorkLogResource[];
+}
+
+// --------------------------------------------------
+// WORK LOG REVISION HISTORY
+// --------------------------------------------------
+
 export interface WorkLogRevision {
+  revisionId?: string;
+  revisionNumber?: number;
+
+  // Previous version content
   timestamp: string;
   editedBy: string;
   workUndertaken: string;
   workCompleted: string;
   pendingWork: string;
   blockers: string;
+
+  remarks?: string;
+  snapshot?: WorkLogSnapshot;
+  resources?: WorkLogResource[];
+
+  // Submission metadata
+  submissionStatus?: SubmissionStatus;
+  submittedAt?: string;
 }
+
+// --------------------------------------------------
+// WORK LOG ADMIN REVIEW HISTORY
+// --------------------------------------------------
+
+export interface WorkLogReview {
+  reviewId: string;
+  workLogId: string;
+
+  reviewerId: string;
+  reviewerName: string;
+  reviewerEmail?: string;
+
+  reviewStatus: ReviewStatus;
+  remarks: string;
+
+  revisionNumber?: number;
+
+  reviewedAt: string;
+}
+
+// --------------------------------------------------
+// WORK LOG
+// --------------------------------------------------
 
 export interface WorkLog {
   id: string;
   workLogId: string;
+
+  // Employee information
   employeeId: string;
   employeeName: string;
   employeeEmail: string;
   department: string;
+
+  // Attendance reference
   attendanceId?: string;
   sessionId?: string;
-  date: string; // YYYY-MM-DD
+
+  // Work date and timing
+  date: string;
   loginTime?: string;
   logoutTime?: string;
+
+  // Task references
   jiraTaskId?: string;
   jiraTaskUrl?: string;
+
+  // Work details
   workUndertaken: string;
   workCompleted: string;
   pendingWork: string;
   blockers: string;
   remarks?: string;
+
+  // Submission lifecycle
   submissionStatus: SubmissionStatus;
+
+  revisionNumber?: number;
+  submittedAt?: string;
+
+  // Latest review information
   reviewRemarks?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+
+  // Revision request information
+  revisionRequestedBy?: string;
+  revisionRequestedById?: string;
+  revisionRequestedAt?: string;
+  revisionRequestRemarks?: string;
+
+  // Resources and historical records
   resources?: WorkLogResource[];
   revisions?: WorkLogRevision[];
+  reviewHistory?: WorkLogReview[];
+
+  // Timestamps
   createdAt: string;
   updatedAt: string;
 }
+
+// --------------------------------------------------
+// WORK SCHEDULE
+// --------------------------------------------------
 
 export interface WorkScheduleConfig {
   id?: string;
   scheduleId: string;
   departmentId?: string;
-  workingDays: number[]; // 1 to 6 (Mon to Sat)
-  dailyMinimumSeconds: number; // 3 hours = 10,800s
-  weeklyMinimumSeconds: number; // 18 hours = 64,800s
+  workingDays: number[];
+  dailyMinimumSeconds: number;
+  weeklyMinimumSeconds: number;
   workModel: 'hybrid' | 'office' | 'remote';
   effectiveFrom: string;
 }
+
+// --------------------------------------------------
+// ATTENDANCE CORRECTION
+// --------------------------------------------------
 
 export interface CorrectionRequest {
   id: string;
@@ -149,7 +275,7 @@ export interface CorrectionRequest {
   employeeName: string;
   attendanceId: string;
   workDate: string;
-  requestedChanges: string; // e.g. "Adjust check in from 10:15 to 09:30"
+  requestedChanges: string;
   reason: string;
   approvalStatus: ApprovalStatus;
   reviewComment?: string;
@@ -157,6 +283,10 @@ export interface CorrectionRequest {
   reviewedAt?: string;
   createdAt: string;
 }
+
+// --------------------------------------------------
+// AUDIT LOG
+// --------------------------------------------------
 
 export interface AuditLog {
   id: string;
@@ -168,6 +298,10 @@ export interface AuditLog {
   timestamp: string;
   metadata?: Record<string, any>;
 }
+
+// --------------------------------------------------
+// NOTIFICATIONS
+// --------------------------------------------------
 
 export interface NotificationItem {
   id: string;

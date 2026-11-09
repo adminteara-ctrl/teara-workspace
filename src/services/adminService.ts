@@ -1,15 +1,18 @@
+
 import {
+  auth,
   db,
   handleFirestoreError,
   OperationType,
 } from '../lib/firebase';
+
 import {
-  collection,
   doc,
-  getDocs,
+  getDoc,
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
+
 import {
   UserProfile,
   WorkScheduleConfig,
@@ -17,124 +20,246 @@ import {
   AttendanceRecord,
   WorkLog,
 } from '../types';
-import { PREDEFINED_USERS } from '../context/AuthContext';
+
 import { getTodayDateString } from '../lib/utils';
 
 export const DEFAULT_SCHEDULE: WorkScheduleConfig = {
   scheduleId: 'sched_teara_default',
   departmentId: 'R&D',
-  workingDays: [1, 2, 3, 4, 5, 6], // Mon to Sat
-  dailyMinimumSeconds: 10800, // 3 Hours
-  weeklyMinimumSeconds: 64800, // 18 Hours
+  workingDays: [1, 2, 3, 4, 5, 6],
+  dailyMinimumSeconds: 10800,
+  weeklyMinimumSeconds: 64800,
   workModel: 'hybrid',
   effectiveFrom: '2026-01-01',
 };
 
+interface EmployeeCreationResponse {
+  message: string;
+  uid: string;
+  email: string;
+  passwordSetupLink: string;
+  note?: string;
+}
+
+interface AccountStatusResponse {
+  message: string;
+  uid: string;
+  accountStatus: 'active' | 'inactive';
+}
+
 class AdminService {
-  private localUsers = new Map<string, UserProfile>();
   private scheduleConfig: WorkScheduleConfig = { ...DEFAULT_SCHEDULE };
   private notifications: NotificationItem[] = [];
 
-  constructor() {
-    this.init();
-  }
+  private async getAdminAuthorizationHeaders(): Promise<HeadersInit> {
+    const currentUser = auth.currentUser;
 
-  private init() {
-    PREDEFINED_USERS.forEach((u) => this.localUsers.set(u.uid, u));
-    this.notifications = [];
+    if (!currentUser) {
+      throw new Error('Your administrator session has expired. Please sign in again.');
+    }
+
+    const idToken = await currentUser.getIdToken();
+
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    };
   }
 
   async getAllUsers(): Promise<UserProfile[]> {
-    const list: UserProfile[] = [];
-    try {
-      const snaps = await getDocs(collection(db, 'users'));
-      snaps.forEach((d) => list.push(d.data() as UserProfile));
-    } catch (err) {
-      console.warn('Firestore users fetch note, using local users:', err);
+    const headers = await this.getAdminAuthorizationHeaders();
+    const response = await fetch('/api/admin/users', { headers });
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(result.error || 'Unable to load the employee directory.');
     }
 
-    this.localUsers.forEach((u) => {
-      if (!list.some((existing) => existing.uid === u.uid)) {
-        list.push(u);
-      }
-    });
+    const users = Array.isArray(result.users)
+      ? result.users as UserProfile[]
+      : [];
 
-    return list.sort((a, b) => a.name.localeCompare(b.name));
+    return users.sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '')
+    );
   }
 
-  async createEmployee(data: Omit<UserProfile, 'createdAt' | 'updatedAt'>): Promise<UserProfile> {
-    const nowIso = new Date().toISOString();
-    const newUser: UserProfile = {
+  async createEmployee(
+    data: Omit<UserProfile, 'createdAt' | 'updatedAt'>
+  ): Promise<UserProfile & { passwordSetupLink?: string }> {
+    const headers = await this.getAdminAuthorizationHeaders();
+
+    const response = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: data.name.trim(),
+        email: data.email.trim().toLowerCase(),
+        username:
+          data.username?.trim().toLowerCase() ||
+          data.email.split('@')[0].trim().toLowerCase(),
+        department: data.department,
+        jobTitle: data.jobTitle || '',
+        workModePreference: data.workModePreference || 'hybrid',
+      }),
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || 'Unable to create the employee account.'
+      );
+    }
+
+    const created = result as EmployeeCreationResponse;
+    const now = new Date().toISOString();
+
+    const newUser: UserProfile & { passwordSetupLink?: string } = {
       ...data,
-      createdAt: nowIso,
-      updatedAt: nowIso,
+      uid: created.uid,
+      email: created.email,
+      username:
+        data.username?.trim().toLowerCase() ||
+        created.email.split('@')[0].toLowerCase(),
+      role: 'employee',
+      accountStatus: 'active',
+      createdAt: now,
+      updatedAt: now,
+      passwordSetupLink: created.passwordSetupLink,
     };
 
-    this.localUsers.set(newUser.uid, newUser);
-
-    try {
-      await setDoc(doc(db, 'users', newUser.uid), newUser);
-      await this.queueNotification(
-        'Account Created',
-        `Welcome to Teara WorkHub. Your internal employee account is now active under the ${newUser.department} department.`,
-        'success',
-        newUser.email
-      );
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `users/${newUser.uid}`);
-    }
+    await this.queueNotification(
+      'Account Created',
+      `An employee account has been created for ${newUser.name}. A password setup link has been generated.`,
+      'success',
+      newUser.email
+    );
 
     return newUser;
   }
 
-  async updateUser(uid: string, changes: Partial<UserProfile>): Promise<UserProfile> {
-    const user = this.localUsers.get(uid);
-    if (!user) throw new Error('User not found');
-
-    const updated: UserProfile = {
-      ...user,
-      ...changes,
-      updatedAt: new Date().toISOString(),
-    };
-    this.localUsers.set(uid, updated);
-
+  async updateUser(
+    uid: string,
+    changes: Partial<UserProfile>
+  ): Promise<UserProfile> {
     try {
-      await updateDoc(doc(db, 'users', uid), updated as any);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
-    }
+      const userRef = doc(db, 'users', uid);
+      const userSnapshot = await getDoc(userRef);
 
-    return updated;
+      if (!userSnapshot.exists()) {
+        throw new Error('User not found.');
+      }
+
+      const existingUser = userSnapshot.data() as UserProfile;
+      const safeChanges = { ...changes };
+
+      delete safeChanges.uid;
+      delete safeChanges.createdAt;
+      delete safeChanges.password;
+
+      // Account status must be changed through the backend.
+      delete safeChanges.accountStatus;
+
+      const updatedAt = new Date().toISOString();
+
+      await updateDoc(userRef, {
+        ...safeChanges,
+        updatedAt,
+      });
+
+      return {
+        ...existingUser,
+        ...safeChanges,
+        updatedAt,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'User not found.') {
+        throw error;
+      }
+
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+      throw error;
+    }
   }
 
   async toggleAccountStatus(uid: string): Promise<UserProfile> {
-    const user = this.localUsers.get(uid);
-    if (!user) throw new Error('User not found');
+    const users = await this.getAllUsers();
+    const user = users.find((item) => item.uid === uid);
 
-    const newStatus = user.accountStatus === 'active' ? 'inactive' : 'active';
-    return this.updateUser(uid, { accountStatus: newStatus });
+    if (!user) {
+      throw new Error('User not found.');
+    }
+
+    if (user.role === 'admin') {
+      throw new Error('Administrator account status cannot be changed here.');
+    }
+
+    const newStatus =
+      user.accountStatus === 'active' ? 'inactive' : 'active';
+
+    const headers = await this.getAdminAuthorizationHeaders();
+    const response = await fetch(
+      `/api/admin/users/${encodeURIComponent(uid)}/status`,
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ accountStatus: newStatus }),
+      }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || 'Unable to update the employee account status.'
+      );
+    }
+
+    const statusResult = result as AccountStatusResponse;
+
+    if (statusResult.accountStatus !== newStatus) {
+      throw new Error('The server returned an unexpected account status.');
+    }
+
+    return {
+      ...user,
+      accountStatus: newStatus,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   async getScheduleConfig(): Promise<WorkScheduleConfig> {
     try {
-      const snaps = await getDocs(collection(db, 'workSchedules'));
-      if (!snaps.empty) {
-        return snaps.docs[0].data() as WorkScheduleConfig;
+      const snapshot = await getDoc(
+        doc(db, 'workSchedules', DEFAULT_SCHEDULE.scheduleId)
+      );
+
+      if (snapshot.exists()) {
+        return snapshot.data() as WorkScheduleConfig;
       }
-    } catch (err) {
-      console.warn('Using local work schedule config:', err);
+    } catch (error) {
+      console.warn('Unable to fetch work schedule configuration:', error);
     }
+
     return this.scheduleConfig;
   }
 
-  async updateScheduleConfig(config: WorkScheduleConfig): Promise<WorkScheduleConfig> {
-    this.scheduleConfig = { ...config };
+  async updateScheduleConfig(
+    config: WorkScheduleConfig
+  ): Promise<WorkScheduleConfig> {
     try {
       await setDoc(doc(db, 'workSchedules', config.scheduleId), config);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `workSchedules/${config.scheduleId}`);
+      this.scheduleConfig = { ...config };
+      return this.scheduleConfig;
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `workSchedules/${config.scheduleId}`
+      );
+      throw error;
     }
-    return this.scheduleConfig;
   }
 
   async queueNotification(
@@ -144,7 +269,7 @@ class AdminService {
     recipientEmail: string,
     link?: string
   ): Promise<NotificationItem> {
-    const notif: NotificationItem = {
+    const notification: NotificationItem = {
       id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       title,
       message,
@@ -154,20 +279,29 @@ class AdminService {
       read: false,
       link,
     };
-    this.notifications.unshift(notif);
-    return notif;
+
+    this.notifications.unshift(notification);
+    return notification;
   }
 
   getNotifications(email?: string): NotificationItem[] {
     if (email) {
-      return this.notifications.filter((n) => n.recipientEmail === email || n.recipientEmail === 'admin.teara@gmail.com');
+      return this.notifications.filter(
+        (notification) =>
+          notification.recipientEmail === email ||
+          notification.recipientEmail === 'admin.teara@gmail.com'
+      );
     }
+
     return this.notifications;
   }
 
   markNotificationRead(id: string): void {
-    const item = this.notifications.find((n) => n.id === id);
-    if (item) item.read = true;
+    const notification = this.notifications.find((item) => item.id === id);
+
+    if (notification) {
+      notification.read = true;
+    }
   }
 
   calculateProductivityOverview(
@@ -176,24 +310,45 @@ class AdminService {
     workLogs: WorkLog[]
   ) {
     const today = getTodayDateString();
-    const activeEmployees = users.filter((u) => u.role === 'employee' && u.accountStatus === 'active');
-    const todayAttendance = attendanceList.filter((a) => a.workDate === today);
+
+    const activeEmployees = users.filter(
+      (user) =>
+        user.role === 'employee' && user.accountStatus === 'active'
+    );
+
+    const todayAttendance = attendanceList.filter(
+      (attendance) => attendance.workDate === today
+    );
 
     const presentTodayCount = todayAttendance.length;
-    const currentlyWorkingCount = todayAttendance.filter((a) => a.status === 'checked_in').length;
-    const metDailyTargetCount = todayAttendance.filter(
-      (a) => a.totalWorkingSeconds >= this.scheduleConfig.dailyMinimumSeconds
-    ).length;
-    const belowDailyTargetCount = todayAttendance.filter(
-      (a) => a.totalWorkingSeconds < this.scheduleConfig.dailyMinimumSeconds
+
+    const currentlyWorkingCount = todayAttendance.filter(
+      (attendance) => attendance.status === 'checked_in'
     ).length;
 
-    // Missing work-log submissions: employees who attended or are present today but have not submitted a work log
+    const metDailyTargetCount = todayAttendance.filter(
+      (attendance) =>
+        attendance.totalWorkingSeconds >=
+        this.scheduleConfig.dailyMinimumSeconds
+    ).length;
+
+    const belowDailyTargetCount = todayAttendance.filter(
+      (attendance) =>
+        attendance.totalWorkingSeconds <
+        this.scheduleConfig.dailyMinimumSeconds
+    ).length;
+
     const todayLogEmployeeIds = new Set(
-      workLogs.filter((l) => l.date === today && l.submissionStatus !== 'draft').map((l) => l.employeeId)
+      workLogs
+        .filter(
+          (log) =>
+            log.date === today && log.submissionStatus !== 'draft'
+        )
+        .map((log) => log.employeeId)
     );
+
     const missingSubmissionsCount = todayAttendance.filter(
-      (a) => !todayLogEmployeeIds.has(a.employeeId)
+      (attendance) => !todayLogEmployeeIds.has(attendance.employeeId)
     ).length;
 
     return {
