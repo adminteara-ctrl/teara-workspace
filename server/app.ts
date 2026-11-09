@@ -1,0 +1,291 @@
+
+import express from 'express';
+import cors from 'cors';
+import { randomBytes } from 'node:crypto';
+
+import { adminAuth, adminDb } from './firebaseAdmin';
+import { verifyAdmin } from './middleware/verifyAdmin';
+import attendanceRouter from './routes/attendance';
+import workLogsRouter from './routes/workLogs';
+
+const app = express();
+
+app.use(
+    cors({
+        origin: process.env.CLIENT_ORIGIN || 'http://localhost:3000',
+    })
+);
+
+app.use(express.json({ limit: '2mb' }));
+
+// Health check
+app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+});
+
+// Attendance routes
+app.use('/api/attendance', attendanceRouter);
+// Work log routes
+app.use('/api/work-logs', workLogsRouter);
+
+// Resolve a username to an email for Firebase Authentication.
+// Returns only the email, never the employee profile.
+app.post('/api/auth/resolve-username', async (req, res) => {
+    try {
+        const { username } = req.body ?? {};
+
+        if (
+            typeof username !== 'string' ||
+            !/^[a-zA-Z0-9._-]{3,30}$/.test(username)
+        ) {
+            res.status(400).json({ error: 'Invalid username.' });
+            return;
+        }
+
+        const snapshot = await adminDb
+            .collection('users')
+            .where('username', '==', username)
+            .limit(1)
+            .get();
+
+        if (snapshot.empty) {
+            res.status(404).json({ error: 'Username not found.' });
+            return;
+        }
+
+        const profile = snapshot.docs[0].data();
+
+        if (profile.accountStatus !== 'active' || !profile.email) {
+            res.status(403).json({
+                error: 'This account is not active.',
+            });
+            return;
+        }
+
+        res.json({ email: profile.email });
+    } catch (error) {
+        console.error('Username resolution failed:', error);
+        res.status(500).json({
+            error: 'Unable to resolve username.',
+        });
+    }
+});
+
+// Get all users for administrator diagnostics.
+app.get('/api/admin/diagnostics/users', verifyAdmin, async (_req, res) => {
+    try {
+        const snapshot = await adminDb.collection('users').get();
+
+        const users = snapshot.docs.map((doc) => {
+            const data = doc.data();
+
+            return {
+                uid: doc.id,
+                username: data.username,
+                name: data.name,
+                email: data.email,
+                role: data.role,
+                department: data.department,
+                accountStatus: data.accountStatus,
+            };
+        });
+
+        res.json({ users });
+    } catch (error) {
+        console.error('User diagnostics failed:', error);
+        res.status(500).json({
+            error: 'Unable to retrieve user diagnostics.',
+        });
+    }
+});
+
+// Get all employee and administrator profiles for the directory.
+app.get('/api/admin/users', verifyAdmin, async (_req, res) => {
+    try {
+        const snapshot = await adminDb.collection('users').get();
+
+        const users: Record<string, any>[] = snapshot.docs
+            .map((userDoc): Record<string, any> => {
+                const data = userDoc.data();
+
+                // Exclude password-related fields from the response.
+                const {
+                    password,
+                    passwordHash,
+                    ...safeProfile
+                } = data;
+
+                return {
+                    ...safeProfile,
+                    uid: userDoc.id,
+                };
+            })
+            .sort((a, b) => {
+                const nameA = String(a.name || '');
+                const nameB = String(b.name || '');
+
+                return nameA.localeCompare(nameB);
+            });
+
+        res.status(200).json({ users });
+    } catch (error) {
+        console.error(
+            'Admin employee directory retrieval failed:',
+            error
+        );
+
+        res.status(500).json({
+            error: 'Unable to retrieve employee directory.',
+        });
+    }
+});
+
+// Create an employee account.
+app.post('/api/admin/users', verifyAdmin, async (req, res) => {
+    try {
+        const {
+            name,
+            email,
+            username,
+            department,
+            jobTitle,
+            workModePreference,
+        } = req.body ?? {};
+
+        if (
+            typeof name !== 'string' ||
+            !name.trim() ||
+            typeof email !== 'string' ||
+            !email.trim() ||
+            typeof username !== 'string' ||
+            !/^[a-zA-Z0-9._-]{3,30}$/.test(username) ||
+            typeof department !== 'string' ||
+            !department.trim()
+        ) {
+            res.status(400).json({
+                error: 'Name, email, valid username and department are required.',
+            });
+            return;
+        }
+
+        const usernameSnapshot = await adminDb
+            .collection('users')
+            .where('username', '==', username)
+            .limit(1)
+            .get();
+
+        if (!usernameSnapshot.empty) {
+            res.status(409).json({ error: 'Username already exists.' });
+            return;
+        }
+
+        const temporaryPassword = randomBytes(32).toString('hex');
+
+        const authUser = await adminAuth.createUser({
+            email: email.trim().toLowerCase(),
+            password: temporaryPassword,
+            displayName: name.trim(),
+            disabled: false,
+        });
+
+        const now = new Date().toISOString();
+
+        try {
+            await adminDb.collection('users').doc(authUser.uid).set({
+                uid: authUser.uid,
+                name: name.trim(),
+                email: email.trim().toLowerCase(),
+                username,
+                role: 'employee',
+                department: department.trim(),
+                jobTitle:
+                    typeof jobTitle === 'string' ? jobTitle.trim() : '',
+                workModePreference:
+                    ['office', 'home', 'hybrid'].includes(workModePreference)
+                        ? workModePreference
+                        : 'hybrid',
+                accountStatus: 'active',
+                createdAt: now,
+                updatedAt: now,
+            });
+        } catch (profileError) {
+            await adminAuth.deleteUser(authUser.uid).catch(() => undefined);
+            throw profileError;
+        }
+
+        const passwordSetupLink = await adminAuth.generatePasswordResetLink(
+            email.trim().toLowerCase()
+        );
+
+        res.status(201).json({
+            message: 'Employee account created.',
+            uid: authUser.uid,
+            passwordSetupLink,
+        });
+    } catch (error: any) {
+        console.error('Employee creation failed:', error);
+
+        if (error?.code === 'auth/email-already-exists') {
+            res.status(409).json({ error: 'Email already exists.' });
+            return;
+        }
+
+        res.status(500).json({
+            error: 'Unable to create employee account.',
+        });
+    }
+});
+
+// Activate or deactivate an employee account.
+app.patch('/api/admin/users/:uid/status', verifyAdmin, async (req, res) => {
+    try {
+        const { uid } = req.params;
+        const { accountStatus } = req.body ?? {};
+
+        if (!['active', 'inactive'].includes(accountStatus)) {
+            res.status(400).json({
+                error: 'Invalid account status.',
+            });
+            return;
+        }
+
+        const profileRef = adminDb.collection('users').doc(uid);
+        const profileSnapshot = await profileRef.get();
+
+        if (!profileSnapshot.exists) {
+            res.status(404).json({ error: 'User not found.' });
+            return;
+        }
+
+        const profile = profileSnapshot.data();
+
+        if (profile?.role === 'admin') {
+            res.status(403).json({
+                error: 'Administrator accounts cannot be disabled here.',
+            });
+            return;
+        }
+
+        await adminAuth.updateUser(uid, {
+            disabled: accountStatus === 'inactive',
+        });
+
+        await profileRef.update({
+            accountStatus,
+            updatedAt: new Date().toISOString(),
+        });
+
+        res.json({
+            message: 'Account status updated.',
+            uid,
+            accountStatus,
+        });
+    } catch (error) {
+        console.error('Account status update failed:', error);
+        res.status(500).json({
+            error: 'Unable to update account status.',
+        });
+    }
+});
+
+export default app;

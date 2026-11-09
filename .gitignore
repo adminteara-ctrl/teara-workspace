@@ -27,3 +27,11 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Temporary backup and generated archive files
+*.backup
+*.zip
+
+# Local backup files
+*.backup
+*.bak
