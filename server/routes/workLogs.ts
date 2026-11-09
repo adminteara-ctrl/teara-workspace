@@ -2,11 +2,11 @@
 import { Router, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 
-import { adminDb } from '../firebaseAdmin';
+import { adminDb } from '../firebaseAdmin.js';
 import {
     verifyUser,
     type AuthenticatedUserRequest,
-} from '../middleware/verifyUser';
+} from '../middleware/verifyUser.js';
 
 const router = Router();
 const COLLECTION = 'workLogs';

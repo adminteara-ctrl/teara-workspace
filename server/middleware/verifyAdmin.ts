@@ -1,6 +1,6 @@
 
 import type { NextFunction, Request, Response } from 'express';
-import { adminAuth, adminDb } from '../firebaseAdmin';
+import { adminAuth, adminDb } from '../firebaseAdmin.js';
 
 export interface AuthenticatedRequest extends Request {
     authenticatedUid?: string;

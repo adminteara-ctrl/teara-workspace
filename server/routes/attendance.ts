@@ -6,12 +6,12 @@ import {
     type Query,
 } from 'firebase-admin/firestore';
 
-import { adminDb } from '../firebaseAdmin';
+import { adminDb } from '../firebaseAdmin.js';
 import {
     verifyUser,
     type AuthenticatedUserRequest,
-} from '../middleware/verifyUser';
-import { verifyAdmin } from '../middleware/verifyAdmin';
+} from '../middleware/verifyUser.js';
+import { verifyAdmin } from '../middleware/verifyAdmin.js';
 
 const router = Router();
 
