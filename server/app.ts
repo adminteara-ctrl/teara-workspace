@@ -3,10 +3,10 @@ import express from 'express';
 import cors from 'cors';
 import { randomBytes } from 'node:crypto';
 
-import { adminAuth, adminDb } from './firebaseAdmin.js';
-import { verifyAdmin } from './middleware/verifyAdmin.js';
-import attendanceRouter from './routes/attendance.js';
-import workLogsRouter from './routes/workLogs.js';
+import { adminAuth, adminDb } from './firebaseAdmin.ts';
+import { verifyAdmin } from './middleware/verifyAdmin.ts';
+import attendanceRouter from './routes/attendance.ts';
+import workLogsRouter from './routes/workLogs.ts';
 
 const app = express();
 

@@ -1,4 +1,4 @@
-import app from './app.js';
+import app from './app.ts';
 
 const PORT = Number(process.env.API_PORT || 4000);
 
