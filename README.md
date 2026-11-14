@@ -5,21 +5,6 @@ Teara WorkHub is an internal workforce management platform designed for Teara's 
 
 ---
 
-## 1. Predefined Users & Credentials
-The platform is configured with 5 distinct users and pre-defined credentials for immediate access and testing:
-
-| Username | Password | Role | Name | Department |
-| :--- | :--- | :--- | :--- | :--- |
-| **`admin`** | `admin123` | **Administrator** | Admin (Lead) | R&D |
-| **`kunal`** | `kunal123` | **Employee** | Kunal | R&D |
-| **`ayan`** | `ayan123` | **Employee** | Ayan | R&D |
-| **`tanmoy`** | `tanmoy123` | **Employee** | Tanmoy | R&D |
-| **`tanisha`** | `tanisha123` | **Employee** | Tanisha | R&D |
-
-*Note:* All artificial dummy data has been removed. The application starts clean and only records real user sessions, breaks, work logs, attachments, and audits as you use it.
-
----
-
 ## 2. Brand Identity & Visual System
 
 - **Forest Green:** `#192B16` (Primary navigation sidebar & executive badges)
